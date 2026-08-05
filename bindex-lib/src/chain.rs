@@ -249,33 +249,59 @@ impl IndexedChain {
         })
     }
 
+    /// Fetch chunks of blocks (each chunk's blocks concurrently) and send
+    /// them to the indexing consumer. Stops on fetch failure (after sending
+    /// the error) or when the consumer hangs up.
+    fn fetch_chunks(
+        &self,
+        headers: &[bitcoin::block::Header],
+        results: std::sync::mpsc::SyncSender<Result<Vec<PerBlockData>, Error>>,
+    ) {
+        use rayon::prelude::*;
+
+        for chunk in headers.chunks(10) {
+            let items = chunk
+                .par_iter()
+                .map(|header| self.fetch_data(header.block_hash()))
+                .collect::<Result<Vec<_>, Error>>();
+            let fetch_failed = items.is_err();
+            if results.send(items).is_err() || fetch_failed {
+                return;
+            }
+        }
+    }
+
     fn index(
         &self,
         headers: &[bitcoin::block::Header],
         mut stats: Option<&mut Stats>,
     ) -> Result<Vec<index::Batch>, Error> {
-        use rayon::prelude::*;
-
+        // Overlap REST fetching with batch building: the producer thread
+        // fetches ahead (bounded by the channel, so at most ~two chunks are
+        // in memory) while this thread builds batches — building stays
+        // sequential, as each batch chains off the previous one's header.
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         let mut batches = Vec::with_capacity(headers.len());
-        for chunk in headers.chunks(10) {
-            let items: Vec<_> = chunk
-                .par_iter()
-                .map(|header| self.fetch_data(header.block_hash()))
-                .collect::<Result<Vec<_>, Error>>()?;
+        std::thread::scope(|scope| -> Result<(), Error> {
+            scope.spawn(|| self.fetch_chunks(headers, sender));
+            // an early return drops `receiver`, unblocking the producer
+            for items in receiver {
+                let items = items?;
+                let tip = batches
+                    .last()
+                    .map_or_else(|| self.headers.tip(), |b: &index::Batch| Some(&b.header));
+                batches.extend(Builder::new(tip, &items).build()?);
 
-            let tip = batches
-                .last()
-                .map_or_else(|| self.headers.tip(), |b: &index::Batch| Some(&b.header));
-            batches.extend(Builder::new(tip, &items).build()?);
-
-            for item in items {
-                if let Some(s) = stats.as_mut() {
-                    s.tip = item.blockhash;
-                    s.size_read += item.block_bytes.len() + item.spent_bytes.len();
-                    s.indexed_blocks += 1;
+                for item in items {
+                    if let Some(s) = stats.as_mut() {
+                        s.tip = item.blockhash;
+                        s.size_read += item.block_bytes.len() + item.spent_bytes.len();
+                        s.indexed_blocks += 1;
+                    }
                 }
             }
-        }
+            Ok(())
+        })?;
         Ok(batches)
     }
 
