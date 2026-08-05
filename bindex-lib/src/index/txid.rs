@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use bitcoin_slices::{bsl, Visit as _};
 
-use crate::index::{BlockBytes, Error, HashPrefixRow, IndexedBlock, TxNum};
+use crate::index::{BlockBytes, Error, HashPrefixRow, IndexedBlock, Prefix, TxNum};
 
 struct IndexVisitor<'a> {
     result: &'a mut IndexedBlock<HashPrefixRow>,
@@ -10,7 +10,10 @@ struct IndexVisitor<'a> {
 
 impl bitcoin_slices::Visitor for IndexVisitor<'_> {
     fn visit_transaction(&mut self, tx: &bsl::Transaction) -> ControlFlow<()> {
-        let prefix = tx.txid().into();
+        // txid_sha2 = the same double-SHA256 computed with hardware SHA
+        // instructions; its raw digest order matches sha256d::Hash's
+        // internal byte order, so the prefix is byte-identical
+        let prefix = Prefix::new(tx.txid_sha2().as_slice());
         self.result
             .rows
             .push(HashPrefixRow::new(prefix, self.result.next_txnum));
