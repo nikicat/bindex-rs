@@ -10,10 +10,8 @@ struct IndexVisitor<'a> {
 
 impl bitcoin_slices::Visitor for IndexVisitor<'_> {
     fn visit_transaction(&mut self, tx: &bsl::Transaction) -> ControlFlow<()> {
-        // txid_sha2 = the same double-SHA256 computed with hardware SHA
-        // instructions; its raw digest order matches sha256d::Hash's
-        // internal byte order, so the prefix is byte-identical
-        let prefix = Prefix::new(tx.txid_sha2().as_slice());
+        use bitcoin::hashes::Hash;
+        let prefix = Prefix::new(crate::hash::txid_of(tx).as_byte_array());
         self.result
             .rows
             .push(HashPrefixRow::new(prefix, self.result.next_txnum));

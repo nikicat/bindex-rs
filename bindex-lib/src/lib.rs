@@ -7,6 +7,7 @@ pub mod cache;
 mod chain;
 mod client;
 mod db;
+pub mod hash;
 mod headers;
 mod index;
 

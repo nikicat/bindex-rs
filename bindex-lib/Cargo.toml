@@ -17,14 +17,12 @@ bitcoin_serde = ["bitcoin/serde"]
 
 [dependencies]
 bitcoin = { version = "0.32", default-features = false }
-# sha2 feature: txid_sha2() via the RustCrypto sha2 crate, which uses the
-# CPU's SHA2 instructions (aarch64 crypto extensions / x86 SHA-NI) —
-# bitcoin_hashes computes SHA256 in portable software and dominates the
-# initial-sync profile (~72% of CPU on a Cortex-A76)
-bitcoin_slices = { version = "0.11", features = ["bitcoin", "sha2"] }
-# asm: on aarch64 the hardware SHA2 backend is feature-gated (x86 SHA-NI is
-# runtime-detected by default) — without it sha2 falls back to soft::compress
-sha2 = { version = "0.10", features = ["asm"] }
+# hashes 1.x has runtime-detected hardware SHA256 (aarch64 crypto
+# extensions / x86 SHA-NI); the 0.14 line pinned by bitcoin 0.32 computes
+# it in portable software, which dominates the initial-sync profile
+# (~72% of CPU on a Cortex-A76). See src/hash.rs.
+bitcoin_hashes = "1.2"
+bitcoin_slices = { version = "0.11", features = ["bitcoin"] }
 log = "0.4"
 serde = { version = "1.0", default-features = false, features = ["serde_derive"] }
 serde_json = "1.0"

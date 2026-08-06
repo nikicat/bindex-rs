@@ -13,11 +13,7 @@ bitcoin::hashes::hash_newtype! {
 
 impl ScriptHash {
     pub fn new(script: &bitcoin::Script) -> Self {
-        // same SHA256, via the sha2 crate's hardware-accelerated engine
-        // instead of bitcoin_hashes' portable software rounds
-        use sha2::{Digest, Sha256};
-        let digest: [u8; 32] = Sha256::digest(script.as_bytes()).into();
-        Self::from_byte_array(digest)
+        Self::from_byte_array(crate::hash::sha256(script.as_bytes()))
     }
 }
 
