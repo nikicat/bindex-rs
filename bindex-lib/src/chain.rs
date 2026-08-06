@@ -32,7 +32,14 @@ pub enum Error {
 
     #[error("block not found: {0}")]
     BlockNotFound(#[from] headers::Reorg),
+
+    #[error("thread pool failed: {0}")]
+    ThreadPool(#[from] rayon::ThreadPoolBuildError),
 }
+
+/// Concurrent REST fetches are IO-bound: size the pool to bitcoind's HTTP
+/// worker-thread count rather than this process' CPU quota.
+const FETCH_THREADS: usize = 16;
 
 #[derive(Debug)]
 pub struct Stats {
@@ -58,6 +65,7 @@ pub struct IndexedChain {
     headers: headers::Headers,
     client: client::Client,
     store: db::DB,
+    fetch_pool: rayon::ThreadPool,
 }
 
 #[derive(Debug)]
@@ -155,6 +163,10 @@ impl IndexedChain {
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
                 .max_response_header_size(usize::MAX) // Disabled as a workaround
+                // keep a warm connection per fetch thread (the defaults would
+                // drop most of them between concurrent bursts)
+                .max_idle_connections(FETCH_THREADS)
+                .max_idle_connections_per_host(FETCH_THREADS)
                 .build(),
         );
         let client = client::Client::new(agent, config.url);
@@ -192,11 +204,16 @@ impl IndexedChain {
                 headers.tip_height().unwrap(),
             );
         }
+        let fetch_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(FETCH_THREADS)
+            .thread_name(|i| format!("fetch{}", i))
+            .build()?;
         Ok(IndexedChain {
             genesis_hash,
             headers,
             client,
             store,
+            fetch_pool,
         })
     }
 
@@ -352,6 +369,18 @@ impl IndexedChain {
         Ok(self
             .client
             .get_block_part(location.indexed_header.hash(), pos)?)
+    }
+
+    /// Fetch multiple transactions' bytes from bitcoind concurrently.
+    /// Results are returned in the input locations' order.
+    pub fn get_txs_bytes(&self, locations: &[Location]) -> Result<Vec<Vec<u8>>, Error> {
+        use rayon::prelude::*;
+        self.fetch_pool.install(|| {
+            locations
+                .par_iter()
+                .map(|location| self.get_tx_bytes(location))
+                .collect()
+        })
     }
 
     pub fn headers(&self) -> &headers::Headers {
