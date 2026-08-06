@@ -465,10 +465,27 @@ impl IndexedChain {
     /// same-block transactions (locations arrive in txnum order, so those
     /// are consecutive with ascending offsets).
     fn coalesce_spans(&self, locations: &[Location]) -> Result<Vec<FetchSpan>, Error> {
+        use rayon::prelude::*;
+
+        // Concurrent batched position lookups: per-transaction lookups cost
+        // an iterator + seek each, which dominates whale-sized fetches;
+        // batches share one iterator and reuse each row for all the nearby
+        // transactions it covers.
+        const LOOKUP_BATCH: usize = 64;
+        let batches: Vec<Vec<index::TxBlockPos>> = self.fetch_pool.install(|| {
+            locations
+                .par_chunks(LOOKUP_BATCH)
+                .map(|batch| {
+                    let txnums: Vec<_> = batch.iter().map(|location| location.txnum).collect();
+                    self.store.get_tx_block_poses(&txnums)
+                })
+                .collect::<Result<_, _>>()
+        })?;
+        let positions: Vec<index::TxBlockPos> = batches.into_iter().flatten().collect();
+
         let mut spans: Vec<FetchSpan> = Vec::new();
-        for (index, location) in locations.iter().enumerate() {
+        for (index, (location, &pos)) in locations.iter().zip(&positions).enumerate() {
             let hash = location.indexed_header.hash();
-            let pos = self.store.get_tx_block_pos(location.txnum)?;
             let extended = spans
                 .last_mut()
                 .is_some_and(|span| span.try_extend(hash, index, pos));
